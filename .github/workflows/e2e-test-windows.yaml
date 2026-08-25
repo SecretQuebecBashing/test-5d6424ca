@@ -1,5 +1,4 @@
-# The workflow is intended to be used from a workflow run
-# as it will pick the artifacts from the triger (through workflow_id)
+# Dummy-only faithful reproduction of the assessed workflow_run boundary.
 name: windows-e2e
 
 on:
@@ -11,14 +10,6 @@ on:
 jobs:
   windows-qe:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        image:
-          - name: hyperv
-            url: "https://crcqe-asia.s3.ap-south-1.amazonaws.com/macadam-image/Fedora-Cloud-Base-Azure-43-1.6.x86_64.vhd"
-          - name: wsl
-            url: "https://mirror.stream.centos.org/SIGs/10-stream/altimages/images/wsl/x86_64/CentOS-Stream-Image-WSL-Base.x86_64-10-202601110111.wsl"
     if: |
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'pull_request' &&
@@ -27,154 +18,103 @@ jobs:
       IMAGE_NAME_E2E: macadam-e2e
       windows-version: '11'
       windows-featurepack: '23h2-ent'
+      # Known dummy canaries. The token cannot administer Actions secrets on
+      # this newly-created repo, so these replace only the secret-store source.
+      ARM_TENANT_ID: dummy-arm-tenant-id
+      ARM_SUBSCRIPTION_ID: dummy-arm-subscription-id
+      ARM_CLIENT_ID: dummy-arm-client-id
+      ARM_CLIENT_SECRET: 4bb6fe58-88d6-453c-aafd-8c852dae49f1
+      AZURE_STORAGE_ACCOUNT: dummy-storage-account
+      AZURE_STORAGE_KEY: 47f74764-90fa-4175-9785-03e17b248f44
     permissions:
-      statuses: write # needed to update commit status (pending/failure/sucess)
-      checks: write # as documented in https://github.com/mikepenz/action-junit-report?tab=readme-ov-file#pr-run-permissions
+      statuses: write
+      checks: write
 
     steps:
-    - name: Download qe oci image
-      id: download-qe-oci-image-artifact
-      uses: actions/download-artifact@v8
-      with:
-        name: ${{ env.IMAGE_NAME_E2E }}-windows-amd64
-        run-id: ${{ github.event.workflow_run.id }}
-        github-token: ${{ github.token }}
+      - name: Download qe oci image
+        id: download-qe-oci-image-artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ env.IMAGE_NAME_E2E }}-windows-amd64
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
 
-    - name: Correlate
-      run: |
-        # Get origin commit sha for testing
-        commit_sha=${{ github.event.workflow_run.head_commit.id }}
-        if [[ -z "${commit_sha}" ]] || [[ "${commit_sha}" == null ]]; then
-          # if .head_commit.id is empty, then .head_sha is used as commit instead
-          commit_sha=${{ github.event.workflow_run.head_sha }}
-        fi
-        echo "commit_sha=${commit_sha}" >> "$GITHUB_ENV"
+      - name: Correlate
+        run: |
+          commit_sha=${{ github.event.workflow_run.head_commit.id }}
+          if [[ -z "${commit_sha}" ]] || [[ "${commit_sha}" == null ]]; then
+            commit_sha=${{ github.event.workflow_run.head_sha }}
+          fi
+          echo "commit_sha=${commit_sha}" >> "$GITHUB_ENV"
+          echo "status_context=ci/gh/e2e/windows-validation" >> "$GITHUB_ENV"
 
-        # Set status_context
-        status_context="ci/gh/e2e"
-        status_context="${status_context}/windows-${{env.windows-version}}-${{env.windows-featurepack}}-${{ matrix.image.name }}"
-        echo "status_context=${status_context}" >> "$GITHUB_ENV"
+      - name: Mask dummy canaries
+        run: |
+          echo "::add-mask::$ARM_CLIENT_SECRET"
+          echo "::add-mask::$AZURE_STORAGE_KEY"
 
-    - name: Add status to the PR check
-      run: |
-        set -xuo pipefail
-        # Status msg
-        data="{\"state\":\"pending\""
-        data="${data},\"description\":\"Running e2e on Windows\""
-        data="${data},\"context\":\"${{ env.status_context }}\""
-        data="${data},\"target_url\":\"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
-        # Create status by API call
-        curl -L -v -X POST \
-          -H "Accept: application/vnd.github+json" \
-          -H "Authorization: Bearer ${{ github.token }}" \
-          https://api.github.com/repos/${{ github.repository }}/statuses/${{ env.commit_sha }} \
-          -d "${data}"
+      - name: Add status to the PR check
+        run: echo "Status API call skipped - dummy environment"
 
-    - name: Create Windows instance
-      run: |
-        sudo chmod -R 777 $GITHUB_WORKSPACE
-        # Create instance
-        podman run -d --name windows-create --rm \
-          -v ${PWD}:/workspace:z \
-          -e ARM_TENANT_ID=${{secrets.ARM_TENANT_ID}} \
-          -e ARM_SUBSCRIPTION_ID=${{secrets.ARM_SUBSCRIPTION_ID}} \
-          -e ARM_CLIENT_ID=${{secrets.ARM_CLIENT_ID}} \
-          -e ARM_CLIENT_SECRET='${{secrets.ARM_CLIENT_SECRET}}' \
-          -e AZURE_STORAGE_ACCOUNT='${{ secrets.AZURE_STORAGE_ACCOUNT }}' \
-          -e AZURE_STORAGE_KEY='${{ secrets.AZURE_STORAGE_KEY }}' \
-          quay.io/redhat-developer/mapt:v0.12.1 azure \
-            windows create \
-            --project-name 'windows-desktop-${{ env.windows-version }}-${{ env.windows-featurepack }}-macadam-${{ matrix.image.name }}' \
-            --backed-url azblob://crc-qenvs-state/${{ github.repository }}-${{ github.run_id }}-${{ matrix.image.name }} \
-            --conn-details-output '/workspace' \
-            --nested-virt \
-            --cpus 8 \
-            --windows-version '${{env.windows-version}}' \
-            --windows-featurepack '${{env.windows-featurepack}}' \
-            --tags project=openshift-local,source=github,org=${{github.repository_owner}},run=https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }} \
-            --spot \
-            --spot-excluded-regions southafricawest,australiacentral2,eastus2euap
-        podman logs -f windows-create
-        sudo chown runner:runner host username id_rsa
+      # The expressions below intentionally preserve production's vulnerable
+      # early interpolation into a retained RUNNER_TEMP shell script. No Azure
+      # request is made and every value is a non-secret canary.
+      - name: Create Windows instance
+        run: |
+          set -euo pipefail
+          ARM_TENANT_ID='${{ env.ARM_TENANT_ID }}'
+          ARM_SUBSCRIPTION_ID='${{ env.ARM_SUBSCRIPTION_ID }}'
+          ARM_CLIENT_ID='${{ env.ARM_CLIENT_ID }}'
+          ARM_CLIENT_SECRET='${{ env.ARM_CLIENT_SECRET }}'
+          AZURE_STORAGE_ACCOUNT='${{ env.AZURE_STORAGE_ACCOUNT }}'
+          AZURE_STORAGE_KEY='${{ env.AZURE_STORAGE_KEY }}'
+          test -n "$ARM_CLIENT_SECRET"
+          test -n "$AZURE_STORAGE_KEY"
+          printf '%s\n' dummy-host > host
+          printf '%s\n' dummy-user > username
+          printf '%s\n' dummy-key > id_rsa
+          echo "Azure provisioning skipped - dummy environment"
 
-    - name: Run macadam e2e
-      run: |
-        # load image
-        podman load -i ${{ env.IMAGE_NAME_E2E }}-windows-amd64.tar
-        # run
-        ImageURL="${{ matrix.image.url }}"
-        cmd="macadam-test/run.ps1 -imageUrl $ImageURL "
+      # This remains a real Podman load/run of the fork-produced OCI image.
+      # Deliberately no ARM_* or AZURE_* variable is passed to the container.
+      - name: Run macadam e2e
+        run: |
+          set -euo pipefail
+          podman load -i "${IMAGE_NAME_E2E}-windows-amd64.tar"
+          podman run --rm \
+            -e OS=windows \
+            -e OUTPUT_FOLDER=/data \
+            -v "$PWD:/data:z" \
+            "${IMAGE_NAME_E2E}:windows-amd64"
+          test -L runner-temp.results
+          test "$(readlink runner-temp.results)" = /home/runner/work/_temp
+          test "$(cat direct-env-check.log)" = "ARM_CLIENT_SECRET=ABSENT"
 
-        podman run --rm -d --name windows-e2e-test \
-          -e OS=windows \
-          -e TARGET_HOST=$(cat host) \
-          -e TARGET_HOST_USERNAME=$(cat username) \
-          -e TARGET_HOST_KEY_PATH=/data/id_rsa \
-          -e TARGET_FOLDER=macadam-test  \
-          -e TARGET_RESULTS=results \
-          -e OUTPUT_FOLDER=/data \
-          -e DEBUG=true \
-          -v $PWD:/data:z \
-          ${{ env.IMAGE_NAME_E2E }}:windows-amd64 \
-              ${cmd}
-        podman logs -f windows-e2e-test
+      - name: Test Report
+        id: test-report
+        uses: mikepenz/action-junit-report@v6
+        if: always()
+        with:
+          fail_on_failure: true
+          include_passed: true
+          detailed_summary: true
+          require_tests: true
+          report_paths: '**/*.xml'
 
-    - name: Test Report
-      id: test-report
-      uses: mikepenz/action-junit-report@v6
-      if: always()
-      with:
-        fail_on_failure: true
-        include_passed: true
-        detailed_summary: true
-        require_tests:  true
-        report_paths: '**/*.xml'
+      - name: Upload e2e results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-validation
+          path: |
+            **/*.xml
+            **/*.results
+            **/*.log
 
-    - name: Upload e2e results
-      uses: actions/upload-artifact@v7
-      if: always()
-      with:
-        name: windows-${{env.windows-version}}${{env.windows-featurepack}}-${{ matrix.image.name }}
-        path: |
-          **/*.xml
-          **/*.results
-          **/*.log
+      - name: Update status of the PR check
+        if: always()
+        run: echo "Status API call skipped - dummy environment"
 
-    - name: Update status of the PR check
-      if: always()
-      run: |
-        set -xuo
-        # Status msg
-        data="{\"state\":\"success\""
-        if [[ ${{steps.test-report.outcome}} != "success" ]]; then
-          data="{\"state\":\"failure\""
-        fi
-        data="${data},\"description\":\"Finished e2e test on Windows\""
-        data="${data},\"context\":\"${{ env.status_context }}\""
-        data="${data},\"target_url\":\"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
-        # Create status by API call
-        curl -L -v -X POST \
-          -H "Accept: application/vnd.github+json" \
-          -H "Authorization: Bearer ${{ github.token }}" \
-          https://api.github.com/repos/${{ github.repository }}/statuses/${{ env.commit_sha }} \
-          -d "${data}"
-
-    - name: Destroy instance
-      if: always()
-      run: |
-        # Make sure lock is removed
-        rm -rf .pulumi/locks/*
-        # Destroy
-        podman run -d --name windows-destroy --rm \
-          -v ${PWD}:/workspace:z \
-          -e ARM_TENANT_ID=${{secrets.ARM_TENANT_ID}} \
-          -e ARM_SUBSCRIPTION_ID=${{secrets.ARM_SUBSCRIPTION_ID}} \
-          -e ARM_CLIENT_ID=${{secrets.ARM_CLIENT_ID}} \
-          -e ARM_CLIENT_SECRET='${{secrets.ARM_CLIENT_SECRET}}' \
-          -e AZURE_STORAGE_ACCOUNT='${{ secrets.AZURE_STORAGE_ACCOUNT }}' \
-          -e AZURE_STORAGE_KEY='${{ secrets.AZURE_STORAGE_KEY }}' \
-          quay.io/redhat-developer/mapt:v0.12.1 azure \
-            windows destroy \
-            --project-name 'windows-desktop-${{ env.windows-version }}-${{ env.windows-featurepack }}-macadam-${{ matrix.image.name }}' \
-            --backed-url azblob://crc-qenvs-state/${{ github.repository }}-${{ github.run_id }}-${{ matrix.image.name }}
-        podman logs -f windows-destroy
+      - name: Destroy instance
+        if: always()
+        run: echo "Azure destruction skipped - dummy environment"

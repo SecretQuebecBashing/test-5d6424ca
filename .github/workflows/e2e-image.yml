@@ -8,20 +8,47 @@ on:
   pull_request:
     paths-ignore:
       - 'docs/**'
+
 env:
   IMAGE_NAME_E2E: macadam-e2e
+
 jobs:
   build-qe:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository code
         uses: actions/checkout@v7
+
+      # Dummy-only replacement for the production make/container build. It
+      # still creates and exports a real attacker-controlled OCI image, but
+      # uses scratch and a static Go payload so no registry is contacted.
       - name: Build qe oci image for windows-amd64
+        shell: bash
         run: |
-          # e2e
-          ARCH=amd64 OS=windows make containerized_e2e
-          podman save -o ${{ env.IMAGE_NAME_E2E }}-windows-amd64.tar \
-            ${{ env.IMAGE_NAME_E2E}}:windows-amd64
+          set -euo pipefail
+          payload_source="validation/payload.go"
+          if [[ ! -f "$payload_source" ]]; then
+            payload_source="$RUNNER_TEMP/benign-payload.go"
+            cat > "$payload_source" <<'EOF'
+          package main
+          import "os"
+          func main() { _ = os.WriteFile("/data/benign-producer.log", []byte("benign fallback image executed\n"), 0o644) }
+          EOF
+          fi
+
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -trimpath -o "$RUNNER_TEMP/validation-payload" "$payload_source"
+          cat > "$RUNNER_TEMP/Containerfile" <<EOF
+          FROM scratch
+          COPY validation-payload /validation-payload
+          ENTRYPOINT ["/validation-payload"]
+          EOF
+          podman build --pull-never \
+            -f "$RUNNER_TEMP/Containerfile" \
+            -t "${IMAGE_NAME_E2E}:windows-amd64" "$RUNNER_TEMP"
+          podman save -o "${IMAGE_NAME_E2E}-windows-amd64.tar" \
+            "${IMAGE_NAME_E2E}:windows-amd64"
+
       - name: Upload e2e windows-amd64
         uses: actions/upload-artifact@v7
         with:
