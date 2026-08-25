@@ -1,0 +1,90 @@
+package e2e
+
+import (
+	"encoding/json"
+	"os"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"github.com/onsi/gomega/gexec"
+)
+
+type ListReporter struct {
+	Name           string
+	Image          string
+	Created        string
+	Running        bool
+	Starting       bool
+	LastUp         string
+	CPUs           uint64
+	Memory         string
+	DiskSize       string
+	Port           int
+	RemoteUsername string
+	IdentityPath   string
+	VMType         string
+}
+
+var _ = Describe("Macadam", func() {
+
+	var tempDir string
+
+	BeforeEach(func() {
+		var err error
+		tempDir, err = os.MkdirTemp("", "test-")
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		os.RemoveAll(tempDir)
+	})
+
+	It("creates a new CentOS VM, starts it, ssh in and cleans", Label("linux", "darwin"), func() {
+		// verify there is no vm
+		noVMcheck()
+
+		// init a CentOS VM
+		session := macadamTest.Macadam([]string{"init", IMAGE})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(gexec.Exit())
+
+		// check the list command returns one item
+		session = macadamTest.Macadam([]string{"list", "--format", "json"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(gexec.Exit())
+		err = json.Unmarshal(session.Out.Contents(), &machineResponses)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(len(machineResponses)).Should(Equal(1))
+
+		// start the CentOS VM
+		session = macadamTest.Macadam([]string{"start"})
+		session.WaitWithTimeout(180)
+		Expect(session).Should(gexec.Exit())
+		Expect(session.OutputToString()).Should(ContainSubstring("started successfully"))
+
+		// ssh into the VM and prints user
+		session = macadamTest.Macadam([]string{"ssh", "whoami"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(gexec.Exit())
+		Expect(session.OutputToString()).Should(Equal("core"))
+
+		// stop the CentOS VM
+		session = macadamTest.Macadam([]string{"stop"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(gexec.Exit())
+		Expect(session.OutputToString()).Should(ContainSubstring("stopped successfully"))
+
+		// rm the CentOS VM and verify that "list" does not return any vm
+		session = macadamTest.Macadam([]string{"rm", "-f"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(gexec.Exit())
+
+		session = macadamTest.Macadam([]string{"list", "--format", "json"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(gexec.Exit())
+		err = json.Unmarshal(session.Out.Contents(), &machineResponses)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(len(machineResponses)).Should(Equal(0))
+	})
+
+})

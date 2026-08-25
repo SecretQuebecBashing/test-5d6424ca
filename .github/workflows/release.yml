@@ -1,0 +1,80 @@
+name: Release build
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, macos-latest] # explicitly use 22.04 for binary compatibility with older distros
+    runs-on: ${{ matrix.os }}
+    steps:
+    - name: Checkout source code
+      uses: actions/checkout@v7
+      with:
+        fetch-depth: 1
+
+    - name: >-
+        WORKAROUND: Fetch tags that points to the revisions
+        checked-out(actions/checkout#1467)
+      run: |-
+        git fetch --tags --force
+
+    - name: Set up Go
+      uses: actions/setup-go@v7
+      with:
+        go-version-file: 'go.mod'
+
+    - name: Build
+      if: matrix.os != 'macos-latest'
+      run: |
+        make cross-non-darwin
+
+    - name: Build macOS Installer
+      if: matrix.os == 'macos-latest'
+      run: |
+        cd packaging/darwin
+        make NO_CODESIGN=1 pkginstaller
+        rm -rf ../../bin/*
+        mv out/macadam-installer-macos-universal.pkg ../../bin/macadam-installer-macos-universal.pkg
+
+    - uses: actions/upload-artifact@v7
+      with:
+        name: macadam-binaries-${{ matrix.os }}
+        path: bin/*
+
+  create_release:
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v7
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v8
+      with:
+        pattern: macadam-binaries-*
+        path: artifacts
+
+    - name: Create release on GitHub
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        RELEASE_TAG=${{ github.ref_name }}
+        gh release create --draft --generate-notes --verify-tag "$RELEASE_TAG"
+
+        cd artifacts
+
+        # Upload Linux and Windows binaries
+        cd macadam-binaries-ubuntu-22.04
+        sha256sum * >> ../sha256sums
+        gh release upload "$RELEASE_TAG" *
+
+        # Upload macOS installer
+        cd ../macadam-binaries-macos-latest
+        sha256sum macadam-installer-macos-universal.pkg >> ../sha256sums
+        gh release upload "$RELEASE_TAG" macadam-installer-macos-universal.pkg ../sha256sums
